@@ -1,12 +1,10 @@
 """MCP server that provides web search via Gemini Grounding with Google Search."""
 
-import base64
 import json
 import logging
 import os
 from typing import Any
 
-import httpx
 from cryptography.fernet import Fernet
 from fastmcp import FastMCP
 from fastmcp.server.auth import OAuthProxy
@@ -112,20 +110,6 @@ def _build_cognito_auth() -> OAuthProxy | None:
         # the standard `aud` claim, so an audience check would always fail.
         required_scopes=required_scopes,
     )
-
-    # Work around authlib not injecting client credentials into the token exchange.
-    # Ideally we'd use httpx event_hooks, but OAuthProxy creates its own
-    # AsyncOAuth2Client internally and doesn't expose hook configuration.
-    # This patch is scoped by URL check to minimise blast radius.
-    basic_creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    original_send = httpx.AsyncClient.send
-
-    async def _inject_basic_auth(self, request, **kwargs):
-        if str(request.url) == token_url and "authorization" not in request.headers:
-            request.headers["authorization"] = f"Basic {basic_creds}"
-        return await original_send(self, request, **kwargs)
-
-    httpx.AsyncClient.send = _inject_basic_auth
 
     jwt_signing_key = os.getenv("MCP_JWT_SIGNING_KEY")
     auth = OAuthProxy(
@@ -250,18 +234,5 @@ async def web_search_custom(query: str, system_instruction: str) -> str:
 # --- Entrypoint ---
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        import asyncio
-
-        query = sys.argv[2] if len(sys.argv) > 2 else "hello world"
-        print(f"Testing Gemini API directly with query: {query!r}")
-        try:
-            print(json.dumps(json.loads(asyncio.run(web_search(query))), indent=2))
-        except Exception as e:
-            print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        logger.info("Starting Gemini Web Search MCP server (streamable-http)")
-        mcp.run(transport="streamable-http", host=MCP_HOST, port=MCP_PORT)
+    logger.info("Starting Gemini Web Search MCP server (streamable-http)")
+    mcp.run(transport="streamable-http", host=MCP_HOST, port=MCP_PORT)
