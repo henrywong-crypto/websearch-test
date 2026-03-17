@@ -14,6 +14,28 @@ stringData:
   COGNITO_CLIENT_SECRET: "REPLACE_WITH_YOUR_COGNITO_CLIENT_SECRET"
   MCP_JWT_SIGNING_KEY: "REPLACE_WITH_A_RANDOM_SECRET_MIN_32_CHARS"
 ---
+# PersistentVolumeClaim for FastMCP OAuth token storage.
+# FastMCP's OAuthProxy persists issued tokens, JTI mappings, and refresh tokens
+# in $FASTMCP_HOME/oauth-proxy/.  Without a PVC this directory lives inside the
+# container and is wiped on every pod restart, invalidating all client tokens and
+# forcing users to re-authenticate.
+#
+# NOTE: replicas is intentionally 1 here.  FastMCP's default file-based store
+# uses ReadWriteOnce semantics — multiple pods writing to the same directory
+# concurrently will corrupt state.  If you need replicas > 1, replace the
+# file store with a shared Redis backend and remove this PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gemini-websearch-oauth-storage
+  namespace: gemini-websearch
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,7 +44,8 @@ metadata:
   labels:
     app: gemini-websearch-mcp
 spec:
-  replicas: 2
+  # Keep at 1 while using file-based OAuth storage (see PVC note above).
+  replicas: 1
   selector:
     matchLabels:
       app: gemini-websearch-mcp
@@ -67,6 +90,12 @@ spec:
             # Public URL that MCP clients reach the server at (must match Cognito redirect URI).
             - name: MCP_BASE_URL
               value: "https://REPLACE_WITH_YOUR_PUBLIC_HOSTNAME"
+            # Point FastMCP's data dir at the PVC so OAuth token state survives pod restarts.
+            - name: FASTMCP_HOME
+              value: "/data/fastmcp"
+          volumeMounts:
+            - name: oauth-storage
+              mountPath: /data/fastmcp
           resources:
             requests:
               cpu: 100m
@@ -86,6 +115,10 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 30
+      volumes:
+        - name: oauth-storage
+          persistentVolumeClaim:
+            claimName: gemini-websearch-oauth-storage
 ---
 apiVersion: v1
 kind: Service

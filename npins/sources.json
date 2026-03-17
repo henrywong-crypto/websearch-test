@@ -1,0 +1,37 @@
+{
+  "pins": {
+    "nixpkgs": {
+      "type": "Channel",
+      "name": "nixpkgs-unstable",
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre963717.a07d4ce6bee6/nixexprs.tar.xz",
+      "hash": "0m542w1kys1ls253vvmjzqbn1lq75pdcqpi7wipl8wl3jd6igz45"
+    },
+    "pyproject.nix": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "pyproject-nix",
+        "repo": "pyproject.nix"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "3799d59a6886bed706eed9d209d7fc9db8ae9040",
+      "url": "https://github.com/pyproject-nix/pyproject.nix/archive/3799d59a6886bed706eed9d209d7fc9db8ae9040.tar.gz",
+      "hash": "148zrcyi8x0wyk4iizhjjbdfnnqlfiz63qphqf0y2d5nqdjdiyy1"
+    },
+    "uv2nix": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "pyproject-nix",
+        "repo": "uv2nix"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "4f155975dee6e52775800959e68154777f3ed694",
+      "url": "https://github.com/pyproject-nix/uv2nix/archive/4f155975dee6e52775800959e68154777f3ed694.tar.gz",
+      "hash": "03imfdxhpndzng36z4z5kkr5r9qhi56bnj9z7r4aisr92s2c2b74"
+    }
+  },
+  "version": 5
+}

@@ -2,162 +2,147 @@
 
 import base64
 import json
-import os
 import logging
-import ssl
-
+import os
 from typing import Any
 
-import certifi
 import httpx
+from cryptography.fernet import Fernet
 from fastmcp import FastMCP
 from fastmcp.server.auth import OAuthProxy
+from fastmcp.server.auth.jwt_issuer import derive_jwt_key
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from google import genai
 from google.genai import types
+from key_value.aio.stores.postgresql import PostgreSQLStore
+from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Build a custom SSL context that works with corporate proxies / custom CAs.
-_ca_file = os.environ.get("SSL_CERT_FILE") or os.path.join(os.path.dirname(__file__), "ca-bundle.pem")
-if not os.path.exists(_ca_file):
-    _ca_file = certifi.where()
+# --- Environment ---
 
-# Force all env vars so that urllib3/requests/google-auth also pick up the CA bundle.
-os.environ.setdefault("SSL_CERT_FILE", _ca_file)
-os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca_file)
-
-# Patch certifi to return our CA bundle (google-auth uses certifi.where() internally).
-certifi.where = lambda: _ca_file
-
-_ssl_ctx = ssl.create_default_context(cafile=_ca_file)
-# Python 3.14 / OpenSSL 3.5 enables VERIFY_X509_STRICT by default, which rejects
-# certificates whose Basic Constraints extension is not marked critical (e.g. Netskope
-# proxy CAs).  Relax that check so corporate proxy CA bundles work.
-_ssl_ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
-logger.info(f"SSL CA file: {_ca_file}, loaded: {_ssl_ctx.cert_store_stats()}")
-
-
-# --- Auth configuration ---
-_cognito_pool_id = os.getenv("COGNITO_USER_POOL_ID")
-_mcp_host = os.getenv("MCP_HOST", "0.0.0.0")
-_mcp_port = int(os.getenv("MCP_PORT", "8080"))
-
+MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
+MCP_PORT = int(os.getenv("MCP_PORT", "8080"))
 # Public base URL that MCP clients (e.g. Cursor) reach the server at.
 # Must be HTTPS in production so OAuth redirect URIs are accepted.
-# Example: https://mcp.example.com  (no trailing slash)
-_mcp_base_url = os.getenv("MCP_BASE_URL", f"http://{_mcp_host}:{_mcp_port}")
+MCP_BASE_URL = os.getenv("MCP_BASE_URL", f"http://{MCP_HOST}:{MCP_PORT}")
 
-_auth: OAuthProxy | None = None
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
-if _cognito_pool_id:
-    _cognito_region = os.getenv("COGNITO_REGION") or _cognito_pool_id.split("_")[0]
-    _cognito_client_id = os.getenv("COGNITO_CLIENT_ID", "")
-    _cognito_client_secret = os.getenv("COGNITO_CLIENT_SECRET", "")
-    _cognito_domain = os.getenv("COGNITO_DOMAIN", "")  # domain prefix only, e.g. "myapp"
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+if not GOOGLE_CLOUD_PROJECT:
+    raise RuntimeError("GOOGLE_CLOUD_PROJECT must be set")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 
-    if not _cognito_client_id:
+# Build the Gemini client once at startup. Credentials come from the VM's
+# metadata server via Application Default Credentials (ADC) on GCP.
+_gemini = genai.Client(
+    vertexai=True,
+    project=GOOGLE_CLOUD_PROJECT,
+    location=GOOGLE_CLOUD_LOCATION,
+)
+
+# --- Auth ---
+
+
+def _build_storage(jwt_signing_key: str) -> FernetEncryptionWrapper | None:
+    """Return an encrypted PostgreSQL token store, or None to use the default disk store."""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        return None
+    encryption_key = derive_jwt_key(
+        high_entropy_material=jwt_signing_key,
+        salt="fastmcp-storage-encryption-key",
+    )
+    logger.info("Using PostgreSQL storage backend: %s", database_url)
+    return FernetEncryptionWrapper(
+        store=PostgreSQLStore(url=database_url),
+        fernet=Fernet(key=encryption_key),
+    )
+
+
+def _build_cognito_auth() -> OAuthProxy | None:
+    """Configure Cognito OAuth proxy if COGNITO_USER_POOL_ID is set, else return None."""
+    pool_id = os.getenv("COGNITO_USER_POOL_ID")
+    if not pool_id:
+        logger.info("No COGNITO_USER_POOL_ID set — running without auth")
+        return None
+
+    region = os.getenv("COGNITO_REGION") or pool_id.split("_")[0]
+    client_id = os.getenv("COGNITO_CLIENT_ID", "")
+    client_secret = os.getenv("COGNITO_CLIENT_SECRET", "")
+    domain = os.getenv("COGNITO_DOMAIN", "")  # domain prefix only, e.g. "myapp"
+
+    if not client_id:
         raise RuntimeError("COGNITO_CLIENT_ID must be set when COGNITO_USER_POOL_ID is configured")
-    if not _cognito_client_secret:
+    if not client_secret:
         raise RuntimeError("COGNITO_CLIENT_SECRET must be set when COGNITO_USER_POOL_ID is configured")
-    if not _cognito_domain:
+    if not domain:
         raise RuntimeError("COGNITO_DOMAIN must be set (domain prefix, e.g. 'myapp')")
 
-    _cognito_base_url = f"https://{_cognito_domain}.auth.{_cognito_region}.amazoncognito.com"
+    cognito_base_url = f"https://{domain}.auth.{region}.amazoncognito.com"
+    token_url = f"{cognito_base_url}/oauth2/token"
+    issuer_url = f"https://cognito-idp.{region}.amazonaws.com/{pool_id}"
 
-    _issuer_url = f"https://cognito-idp.{_cognito_region}.amazonaws.com/{_cognito_pool_id}"
-    _jwks_uri = f"{_issuer_url}/.well-known/jwks.json"
-
-    # Cognito requires client credentials in the POST body for token exchange.
-    # The audience for Cognito access tokens is the User Pool client ID.
-    _cognito_scopes_raw = os.getenv("COGNITO_SCOPES", "")
     # Only set required_scopes if explicitly configured. Cognito access tokens do
     # NOT carry openid/profile/email scopes (those are ID token scopes only), so
     # leaving required_scopes empty avoids a permanent 401 loop.
-    _cognito_scopes = [s.strip() for s in _cognito_scopes_raw.split() if s.strip()] or None
+    scopes_raw = os.getenv("COGNITO_SCOPES", "")
+    required_scopes = [s.strip() for s in scopes_raw.split() if s.strip()] or None
 
-    _token_verifier = JWTVerifier(
-        jwks_uri=_jwks_uri,
-        issuer=_issuer_url,
-        # NOTE: Do NOT set audience here. Cognito access tokens use `client_id`
-        # instead of the standard `aud` claim, so JWTVerifier's audience check
-        # would always fail. The issuer check is sufficient to validate the token
-        # came from the correct Cognito user pool.
-        required_scopes=_cognito_scopes,
-        http_client=httpx.AsyncClient(verify=_ssl_ctx),
+    token_verifier = JWTVerifier(
+        jwks_uri=f"{issuer_url}/.well-known/jwks.json",
+        issuer=issuer_url,
+        # Do NOT set audience: Cognito access tokens use `client_id` instead of
+        # the standard `aud` claim, so an audience check would always fail.
+        required_scopes=required_scopes,
     )
 
-    # Work around authlib not injecting client credentials into the token exchange
-    # request. Patch httpx to add Basic Auth for Cognito token requests, matching
-    # the approach in ~/cognito (Authorization: Basic base64(client_id:client_secret)).
-    _basic_creds = base64.b64encode(
-        f"{_cognito_client_id}:{_cognito_client_secret}".encode()
-    ).decode()
-    _cognito_token_url = f"{_cognito_base_url}/oauth2/token"
+    # Work around authlib not injecting client credentials into the token exchange.
+    # Patch httpx to add Basic Auth on Cognito token requests.
+    basic_creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    original_send = httpx.AsyncClient.send
 
-    _original_httpx_send = httpx.AsyncClient.send
-    async def _inject_cognito_auth(self, request, **kwargs):
-        if str(request.url) == _cognito_token_url:
-            request.headers["authorization"] = f"Basic {_basic_creds}"
-        return await _original_httpx_send(self, request, **kwargs)
-    httpx.AsyncClient.send = _inject_cognito_auth
+    async def _inject_basic_auth(self, request, **kwargs):
+        if str(request.url) == token_url:
+            request.headers["authorization"] = f"Basic {basic_creds}"
+        return await original_send(self, request, **kwargs)
 
-    _auth = OAuthProxy(
-        upstream_authorization_endpoint=f"{_cognito_base_url}/oauth2/authorize",
-        upstream_token_endpoint=_cognito_token_url,
-        upstream_client_id=_cognito_client_id,
-        upstream_client_secret=_cognito_client_secret,
-        token_verifier=_token_verifier,
-        base_url=_mcp_base_url,
-        # Cognito expects client credentials as Basic Auth header.
-        token_endpoint_auth_method="client_secret_basic",
-        # Cognito supports PKCE — keep end-to-end security.
-        forward_pkce=True,
-        jwt_signing_key=os.getenv("MCP_JWT_SIGNING_KEY"),
+    httpx.AsyncClient.send = _inject_basic_auth
+
+    jwt_signing_key = os.getenv("MCP_JWT_SIGNING_KEY")
+    auth = OAuthProxy(
+        upstream_authorization_endpoint=f"{cognito_base_url}/oauth2/authorize",
+        upstream_token_endpoint=token_url,
+        upstream_client_id=client_id,
+        upstream_client_secret=client_secret,
+        token_verifier=token_verifier,
+        base_url=MCP_BASE_URL,
+        token_endpoint_auth_method="client_secret_basic",  # Cognito expects Basic Auth
+        forward_pkce=True,  # Cognito supports PKCE — keep end-to-end security
+        jwt_signing_key=jwt_signing_key,
+        client_storage=_build_storage(jwt_signing_key or ""),
     )
 
     logger.info(
-        f"Cognito OAuth proxy enabled: pool={_cognito_pool_id}, region={_cognito_region}, "
-        f"domain={_cognito_domain}, base_url={_mcp_base_url}, cognito_url={_cognito_base_url}"
+        "Cognito OAuth proxy enabled: pool=%s, region=%s, domain=%s, "
+        "base_url=%s, cognito_url=%s",
+        pool_id, region, domain, MCP_BASE_URL, cognito_base_url,
     )
-else:
-    logger.info("No COGNITO_USER_POOL_ID set — running without auth")
-
-mcp = FastMCP(
-    "gemini-websearch",
-    auth=_auth,
-)
-
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    return auth
 
 
-def _get_client() -> genai.Client:
-    http_options = types.HttpOptions(httpx_client=httpx.Client(verify=_ssl_ctx))
+mcp = FastMCP("gemini-websearch", auth=_build_cognito_auth())
 
-    project = os.getenv("GOOGLE_CLOUD_PROJECT")
-    if project:
-        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-        return genai.Client(
-            vertexai=True, project=project, location=location,
-            http_options=http_options,
-        )
-
-    api_key = os.getenv("GEMINI_API_KEY")
-    if api_key:
-        return genai.Client(api_key=api_key, http_options=http_options)
-
-    raise RuntimeError(
-        "Set GOOGLE_CLOUD_PROJECT (for Vertex AI) or GEMINI_API_KEY (for API key auth)"
-    )
+# --- Response formatting ---
 
 
 def _format_response(response) -> dict[str, Any]:
-    """Extract text, citations, and grounding metadata from a Gemini response."""
-    candidate = response.candidates[0]
+    """Extract text, sources, and inline citations from a Gemini response."""
     result: dict[str, Any] = {"text": response.text}
 
-    metadata = candidate.grounding_metadata
+    metadata = response.candidates[0].grounding_metadata
     if not metadata:
         return result
 
@@ -165,36 +150,43 @@ def _format_response(response) -> dict[str, Any]:
         result["search_queries"] = list(metadata.web_search_queries)
 
     chunks = metadata.grounding_chunks or []
-    sources = []
-    for chunk in chunks:
-        if chunk.web:
-            sources.append({"title": chunk.web.title, "uri": chunk.web.uri})
+    sources = [
+        {"title": chunk.web.title, "uri": chunk.web.uri}
+        for chunk in chunks
+        if chunk.web
+    ]
     if sources:
         result["sources"] = sources
 
     supports = metadata.grounding_supports or []
     if supports and chunks:
-        cited_text = response.text
-        sorted_supports = sorted(
-            supports, key=lambda s: s.segment.end_index, reverse=True
-        )
-        for support in sorted_supports:
-            end_index = support.segment.end_index
-            if not support.grounding_chunk_indices:
-                continue
-            links = []
-            for i in support.grounding_chunk_indices:
-                if i < len(chunks) and chunks[i].web:
-                    links.append(f"[{i + 1}]({chunks[i].web.uri})")
-            if links:
-                cited_text = (
-                    cited_text[:end_index]
-                    + " " + ", ".join(links)
-                    + cited_text[end_index:]
-                )
-        result["cited_text"] = cited_text
+        result["cited_text"] = _build_cited_text(response.text, supports, chunks)
 
     return result
+
+
+def _build_cited_text(text: str, supports, chunks) -> str:
+    """Insert inline citation links into text, processing from end to start to preserve offsets."""
+    cited = text
+    for support in sorted(supports, key=lambda s: s.segment.end_index, reverse=True):
+        if not support.grounding_chunk_indices:
+            continue
+        links = [
+            f"[{i + 1}]({chunks[i].web.uri})"
+            for i in support.grounding_chunk_indices
+            if i < len(chunks) and chunks[i].web
+        ]
+        if links:
+            end = support.segment.end_index
+            cited = cited[:end] + " " + ", ".join(links) + cited[end:]
+    return cited
+
+
+# --- Tools ---
+
+_GOOGLE_SEARCH_CONFIG = types.GenerateContentConfig(
+    tools=[types.Tool(google_search=types.GoogleSearch())]
+)
 
 
 @mcp.tool()
@@ -207,12 +199,8 @@ def web_search(query: str) -> str:
     Args:
         query: The search query or question to answer.
     """
-    client = _get_client()
-    config = types.GenerateContentConfig(
-        tools=[types.Tool(google_search=types.GoogleSearch())]
-    )
-    response = client.models.generate_content(
-        model=GEMINI_MODEL, contents=query, config=config
+    response = _gemini.models.generate_content(
+        model=GEMINI_MODEL, contents=query, config=_GOOGLE_SEARCH_CONFIG
     )
     return json.dumps(_format_response(response), indent=2)
 
@@ -226,16 +214,17 @@ def web_search_custom(query: str, system_instruction: str) -> str:
         system_instruction: Instructions for how to process and present results
             (e.g. "Respond in bullet points", "Focus on technical details").
     """
-    client = _get_client()
     config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())],
         system_instruction=system_instruction,
     )
-    response = client.models.generate_content(
+    response = _gemini.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=config
     )
     return json.dumps(_format_response(response), indent=2)
 
+
+# --- Entrypoint ---
 
 if __name__ == "__main__":
     import sys
@@ -244,18 +233,10 @@ if __name__ == "__main__":
         query = sys.argv[2] if len(sys.argv) > 2 else "hello world"
         print(f"Testing Gemini API directly with query: {query!r}")
         try:
-            client = _get_client()
-            print("Client created OK")
-            config = types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())]
-            )
-            response = client.models.generate_content(
-                model=GEMINI_MODEL, contents=query, config=config
-            )
-            print(json.dumps(_format_response(response), indent=2))
+            print(json.dumps(json.loads(web_search(query)), indent=2))
         except Exception as e:
             print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
             sys.exit(1)
     else:
         logger.info("Starting Gemini Web Search MCP server (streamable-http)")
-        mcp.run(transport="streamable-http", host=_mcp_host, port=_mcp_port)
+        mcp.run(transport="streamable-http", host=MCP_HOST, port=MCP_PORT)
