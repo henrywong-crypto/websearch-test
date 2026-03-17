@@ -16,7 +16,7 @@ from fastmcp.server.auth.providers.jwt import JWTVerifier
 from google import genai
 from google.genai import types
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Build a custom SSL context that works with corporate proxies / custom CAs.
