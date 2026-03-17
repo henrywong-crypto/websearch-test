@@ -7,7 +7,7 @@
     pyproject = true;
     src = ./.;
 
-    build-system = with python.pkgs; [setuptools];
+    build-system = with python.pkgs; [uv-build];
 
     dependencies = with python.pkgs; [
       fastmcp

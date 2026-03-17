@@ -103,9 +103,28 @@ mcp = FastMCP("gemini-websearch", auth=_build_cognito_auth())
 
 
 # ── Response formatting ──────────────────────────────────────────────────────
+#
+# Gemini Grounding responses contain the answer text plus metadata linking
+# spans of text back to web sources. We restructure this into a JSON dict
+# that MCP clients can render directly:
+#
+#   {
+#     "text": "Python 3.14 was released in October 2025.",
+#     "search_queries": ["Python 3.14 release date"],
+#     "sources": [
+#       {"title": "Python.org", "uri": "https://python.org/downloads/"},
+#       {"title": "Wikipedia", "uri": "https://en.wikipedia.org/wiki/Python"}
+#     ],
+#     "cited_text": "Python 3.14 was released in October 2025. [1](https://python.org/downloads/), [2](https://en.wikipedia.org/wiki/Python)"
+#   }
+#
+# "cited_text" inlines markdown-style reference links at the end of each
+# supported text span so an LLM or UI can show sources next to the claims.
 
 
 def _format_response(response) -> dict[str, Any]:
+    # Extract text, sources, and inline citations from a raw Gemini response
+    # into a flat dict that MCP clients can render directly.
     result: dict[str, Any] = {"text": response.text}
 
     if not response.candidates:
@@ -135,6 +154,9 @@ def _format_response(response) -> dict[str, Any]:
 
 
 def _build_cited_text(text: str, supports, chunks) -> str:
+    # Each "support" marks a text span (start_index..end_index) and the chunk
+    # indices that back it. We insert "[N](url)" links after each span.
+    # Process from end to start so earlier offsets stay valid after insertion.
     cited = text
     for support in sorted(supports, key=lambda s: s.segment.end_index, reverse=True):
         if not support.grounding_chunk_indices:
