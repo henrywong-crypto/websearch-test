@@ -17,7 +17,8 @@ from google.genai import types
 from key_value.aio.stores.postgresql import PostgreSQLStore
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
-logging.basicConfig(level=logging.DEBUG)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger(__name__)
 
 # --- Environment ---
@@ -51,11 +52,20 @@ def _build_storage(jwt_signing_key: str) -> FernetEncryptionWrapper | None:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         return None
+    if not jwt_signing_key:
+        raise RuntimeError(
+            "MCP_JWT_SIGNING_KEY must be set when DATABASE_URL is configured"
+        )
     encryption_key = derive_jwt_key(
         high_entropy_material=jwt_signing_key,
         salt="fastmcp-storage-encryption-key",
     )
-    logger.info("Using PostgreSQL storage backend: %s", database_url)
+    # Redact credentials from the URL before logging.
+    from urllib.parse import urlparse
+
+    parsed = urlparse(database_url)
+    redacted = parsed._replace(netloc=f"***@{parsed.hostname}:{parsed.port or 5432}")
+    logger.info("Using PostgreSQL storage backend: %s", redacted.geturl())
     return FernetEncryptionWrapper(
         store=PostgreSQLStore(url=database_url),
         fernet=Fernet(key=encryption_key),
@@ -104,12 +114,14 @@ def _build_cognito_auth() -> OAuthProxy | None:
     )
 
     # Work around authlib not injecting client credentials into the token exchange.
-    # Patch httpx to add Basic Auth on Cognito token requests.
+    # Ideally we'd use httpx event_hooks, but OAuthProxy creates its own
+    # AsyncOAuth2Client internally and doesn't expose hook configuration.
+    # This patch is scoped by URL check to minimise blast radius.
     basic_creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     original_send = httpx.AsyncClient.send
 
     async def _inject_basic_auth(self, request, **kwargs):
-        if str(request.url) == token_url:
+        if str(request.url) == token_url and "authorization" not in request.headers:
             request.headers["authorization"] = f"Basic {basic_creds}"
         return await original_send(self, request, **kwargs)
 
@@ -149,6 +161,9 @@ mcp = FastMCP("gemini-websearch", auth=_build_cognito_auth())
 def _format_response(response) -> dict[str, Any]:
     """Extract text, sources, and inline citations from a Gemini response."""
     result: dict[str, Any] = {"text": response.text}
+
+    if not response.candidates:
+        return result
 
     metadata = response.candidates[0].grounding_metadata
     if not metadata:
@@ -198,7 +213,7 @@ _GOOGLE_SEARCH_CONFIG = types.GenerateContentConfig(
 
 
 @mcp.tool()
-def web_search(query: str) -> str:
+async def web_search(query: str) -> str:
     """Search the web using Gemini Grounding with Google Search.
 
     Returns up-to-date information with citations from real web sources.
@@ -207,14 +222,14 @@ def web_search(query: str) -> str:
     Args:
         query: The search query or question to answer.
     """
-    response = _gemini.models.generate_content(
+    response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=_GOOGLE_SEARCH_CONFIG
     )
     return json.dumps(_format_response(response), indent=2)
 
 
 @mcp.tool()
-def web_search_custom(query: str, system_instruction: str) -> str:
+async def web_search_custom(query: str, system_instruction: str) -> str:
     """Search the web with a custom system instruction to shape the response.
 
     Args:
@@ -226,7 +241,7 @@ def web_search_custom(query: str, system_instruction: str) -> str:
         tools=[types.Tool(google_search=types.GoogleSearch())],
         system_instruction=system_instruction,
     )
-    response = _gemini.models.generate_content(
+    response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=config
     )
     return json.dumps(_format_response(response), indent=2)
@@ -238,10 +253,12 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1 and sys.argv[1] == "test":
+        import asyncio
+
         query = sys.argv[2] if len(sys.argv) > 2 else "hello world"
         print(f"Testing Gemini API directly with query: {query!r}")
         try:
-            print(json.dumps(json.loads(web_search(query)), indent=2))
+            print(json.dumps(json.loads(asyncio.run(web_search(query))), indent=2))
         except Exception as e:
             print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
             sys.exit(1)

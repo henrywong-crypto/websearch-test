@@ -2,7 +2,7 @@
 
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -136,6 +136,11 @@ class TestFormatResponse:
         result = _format_response(resp)
         assert "cited_text" not in result or "[" not in result.get("cited_text", "")
 
+    def test_empty_candidates(self):
+        resp = SimpleNamespace(text="Hello", candidates=[])
+        result = _format_response(resp)
+        assert result == {"text": "Hello"}
+
 
 # ---------------------------------------------------------------------------
 # 2. web_search tool
@@ -143,20 +148,24 @@ class TestFormatResponse:
 
 
 class TestWebSearch:
-    def test_calls_gemini_and_returns_json(self):
+    @pytest.mark.asyncio
+    async def test_calls_gemini_and_returns_json(self):
         mock_response = _make_response("search result")
 
         with patch("server._gemini") as mock_client:
-            mock_client.models.generate_content.return_value = mock_response
-            raw = web_search("test query")
+            mock_client.aio.models.generate_content = AsyncMock(
+                return_value=mock_response
+            )
+            raw = await web_search("test query")
 
         result = json.loads(raw)
         assert result["text"] == "search result"
 
-        call_kwargs = mock_client.models.generate_content.call_args
+        call_kwargs = mock_client.aio.models.generate_content.call_args
         assert call_kwargs.kwargs["contents"] == "test query"
 
-    def test_returns_valid_json_with_expected_keys(self):
+    @pytest.mark.asyncio
+    async def test_returns_valid_json_with_expected_keys(self):
         chunks = [_make_chunk("Example", "https://example.com")]
         metadata = SimpleNamespace(
             web_search_queries=["test"],
@@ -166,8 +175,10 @@ class TestWebSearch:
         mock_response = _make_response("result text", metadata=metadata)
 
         with patch("server._gemini") as mock_client:
-            mock_client.models.generate_content.return_value = mock_response
-            raw = web_search("test")
+            mock_client.aio.models.generate_content = AsyncMock(
+                return_value=mock_response
+            )
+            raw = await web_search("test")
 
         result = json.loads(raw)
         assert "text" in result
@@ -181,23 +192,29 @@ class TestWebSearch:
 
 
 class TestWebSearchCustom:
-    def test_passes_system_instruction(self):
+    @pytest.mark.asyncio
+    async def test_passes_system_instruction(self):
         mock_response = _make_response("custom result")
 
         with patch("server._gemini") as mock_client:
-            mock_client.models.generate_content.return_value = mock_response
-            web_search_custom("query", "Be concise")
+            mock_client.aio.models.generate_content = AsyncMock(
+                return_value=mock_response
+            )
+            await web_search_custom("query", "Be concise")
 
-        call_kwargs = mock_client.models.generate_content.call_args
+        call_kwargs = mock_client.aio.models.generate_content.call_args
         config = call_kwargs.kwargs["config"]
         assert config.system_instruction == "Be concise"
 
-    def test_returns_valid_json(self):
+    @pytest.mark.asyncio
+    async def test_returns_valid_json(self):
         mock_response = _make_response("custom result")
 
         with patch("server._gemini") as mock_client:
-            mock_client.models.generate_content.return_value = mock_response
-            raw = web_search_custom("query", "instructions")
+            mock_client.aio.models.generate_content = AsyncMock(
+                return_value=mock_response
+            )
+            raw = await web_search_custom("query", "instructions")
 
         result = json.loads(raw)
         assert result["text"] == "custom result"
@@ -221,7 +238,9 @@ class TestMCPIntegration:
         mock_response = _make_response("mcp result")
 
         with patch("server._gemini") as mock_client:
-            mock_client.models.generate_content.return_value = mock_response
+            mock_client.aio.models.generate_content = AsyncMock(
+                return_value=mock_response
+            )
             result = await mcp.call_tool("web_search", {"query": "test"})
 
         parsed = json.loads(result.content[0].text)
@@ -232,7 +251,9 @@ class TestMCPIntegration:
         mock_response = _make_response("custom mcp result")
 
         with patch("server._gemini") as mock_client:
-            mock_client.models.generate_content.return_value = mock_response
+            mock_client.aio.models.generate_content = AsyncMock(
+                return_value=mock_response
+            )
             result = await mcp.call_tool(
                 "web_search_custom",
                 {"query": "test", "system_instruction": "Be brief"},
