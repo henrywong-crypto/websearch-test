@@ -8,10 +8,10 @@ import pytest
 
 from server import _format_response, mcp, web_search, web_search_custom
 
-
 # ---------------------------------------------------------------------------
 # Helpers to build mock Gemini response objects
 # ---------------------------------------------------------------------------
+
 
 def _make_chunk(title: str, uri: str) -> SimpleNamespace:
     return SimpleNamespace(web=SimpleNamespace(title=title, uri=uri))
@@ -38,6 +38,7 @@ def _make_response(
 # 1. _format_response  (pure logic)
 # ---------------------------------------------------------------------------
 
+
 class TestFormatResponse:
     def test_text_only_no_metadata(self):
         resp = _make_response("Hello world")
@@ -60,7 +61,10 @@ class TestFormatResponse:
         assert result["search_queries"] == ["q1", "q2"]
 
     def test_grounding_chunks_extracts_sources(self):
-        chunks = [_make_chunk("Site A", "https://a.com"), _make_chunk("Site B", "https://b.com")]
+        chunks = [
+            _make_chunk("Site A", "https://a.com"),
+            _make_chunk("Site B", "https://b.com"),
+        ]
         metadata = SimpleNamespace(
             web_search_queries=None,
             grounding_chunks=chunks,
@@ -93,7 +97,7 @@ class TestFormatResponse:
             _make_chunk("B", "https://b.com"),
         ]
         supports = [
-            _make_support(0, 15, [0]),   # "First sentence."
+            _make_support(0, 15, [0]),  # "First sentence."
             _make_support(16, 32, [1]),  # "Second sentence."
         ]
         metadata = SimpleNamespace(
@@ -137,6 +141,7 @@ class TestFormatResponse:
 # 2. web_search tool
 # ---------------------------------------------------------------------------
 
+
 class TestWebSearch:
     def test_calls_gemini_and_returns_json(self):
         mock_response = _make_response("search result")
@@ -174,6 +179,7 @@ class TestWebSearch:
 # 3. web_search_custom tool
 # ---------------------------------------------------------------------------
 
+
 class TestWebSearchCustom:
     def test_passes_system_instruction(self):
         mock_response = _make_response("custom result")
@@ -200,6 +206,7 @@ class TestWebSearchCustom:
 # ---------------------------------------------------------------------------
 # 4. MCP server integration
 # ---------------------------------------------------------------------------
+
 
 class TestMCPIntegration:
     @pytest.mark.asyncio

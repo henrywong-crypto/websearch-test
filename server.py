@@ -75,9 +75,13 @@ def _build_cognito_auth() -> OAuthProxy | None:
     domain = os.getenv("COGNITO_DOMAIN", "")  # domain prefix only, e.g. "myapp"
 
     if not client_id:
-        raise RuntimeError("COGNITO_CLIENT_ID must be set when COGNITO_USER_POOL_ID is configured")
+        raise RuntimeError(
+            "COGNITO_CLIENT_ID must be set when COGNITO_USER_POOL_ID is configured"
+        )
     if not client_secret:
-        raise RuntimeError("COGNITO_CLIENT_SECRET must be set when COGNITO_USER_POOL_ID is configured")
+        raise RuntimeError(
+            "COGNITO_CLIENT_SECRET must be set when COGNITO_USER_POOL_ID is configured"
+        )
     if not domain:
         raise RuntimeError("COGNITO_DOMAIN must be set (domain prefix, e.g. 'myapp')")
 
@@ -128,7 +132,11 @@ def _build_cognito_auth() -> OAuthProxy | None:
     logger.info(
         "Cognito OAuth proxy enabled: pool=%s, region=%s, domain=%s, "
         "base_url=%s, cognito_url=%s",
-        pool_id, region, domain, MCP_BASE_URL, cognito_base_url,
+        pool_id,
+        region,
+        domain,
+        MCP_BASE_URL,
+        cognito_base_url,
     )
     return auth
 
