@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gemini-websearch
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gemini-websearch-secrets
+  namespace: gemini-websearch
+type: Opaque
+stringData:
+  GEMINI_API_KEY: "REPLACE_WITH_YOUR_GEMINI_API_KEY"
+  COGNITO_CLIENT_SECRET: "REPLACE_WITH_YOUR_COGNITO_CLIENT_SECRET"
+  MCP_JWT_SIGNING_KEY: "REPLACE_WITH_A_RANDOM_SECRET_MIN_32_CHARS"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gemini-websearch-mcp
+  namespace: gemini-websearch
+  labels:
+    app: gemini-websearch-mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gemini-websearch-mcp
+  template:
+    metadata:
+      labels:
+        app: gemini-websearch-mcp
+    spec:
+      containers:
+        - name: mcp-server
+          image: gemini-websearch-mcp:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gemini-websearch-secrets
+                  key: GEMINI_API_KEY
+            - name: COGNITO_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gemini-websearch-secrets
+                  key: COGNITO_CLIENT_SECRET
+            - name: MCP_JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gemini-websearch-secrets
+                  key: MCP_JWT_SIGNING_KEY
+            - name: GEMINI_MODEL
+              value: "gemini-2.5-flash"
+            # --- Cognito OAuth (Figma-style browser login flow) ---
+            # Set COGNITO_USER_POOL_ID to enable OAuth; omit to run without auth.
+            - name: COGNITO_USER_POOL_ID
+              value: "REPLACE_WITH_YOUR_USER_POOL_ID"   # e.g. us-east-1_AbC123
+            - name: COGNITO_CLIENT_ID
+              value: "REPLACE_WITH_YOUR_APP_CLIENT_ID"
+            - name: COGNITO_DOMAIN
+              value: "REPLACE_WITH_YOUR_COGNITO_DOMAIN_PREFIX" # e.g. myapp (just the prefix, not the full URL)
+            - name: COGNITO_SCOPES
+              value: "openid profile email"
+            # Public URL that MCP clients reach the server at (must match Cognito redirect URI).
+            - name: MCP_BASE_URL
+              value: "https://REPLACE_WITH_YOUR_PUBLIC_HOSTNAME"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gemini-websearch-mcp
+  namespace: gemini-websearch
+spec:
+  selector:
+    app: gemini-websearch-mcp
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP
