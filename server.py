@@ -71,8 +71,11 @@ if _cognito_pool_id:
 
     # Cognito requires client credentials in the POST body for token exchange.
     # The audience for Cognito access tokens is the User Pool client ID.
-    _cognito_scopes_raw = os.getenv("COGNITO_SCOPES", "openid profile email")
-    _cognito_scopes = [s.strip() for s in _cognito_scopes_raw.split() if s.strip()]
+    _cognito_scopes_raw = os.getenv("COGNITO_SCOPES", "")
+    # Only set required_scopes if explicitly configured. Cognito access tokens do
+    # NOT carry openid/profile/email scopes (those are ID token scopes only), so
+    # leaving required_scopes empty avoids a permanent 401 loop.
+    _cognito_scopes = [s.strip() for s in _cognito_scopes_raw.split() if s.strip()] or None
 
     _token_verifier = JWTVerifier(
         jwks_uri=_jwks_uri,
