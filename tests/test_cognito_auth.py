@@ -1,88 +1,82 @@
 """Tests for Cognito OAuth configuration via OAuthProxy + JWTVerifier."""
 
-import importlib
 import os
-import time
 from unittest.mock import patch
 
 import pytest
 from fastmcp.server.auth import OAuthProxy
 from fastmcp.server.auth.providers.jwt import JWTVerifier, RSAKeyPair
 
+import server
 
 # --- Helpers ---
 
-# Base env vars that server.py needs beyond COGNITO_* settings.
-_BASE_ENV = {k: v for k, v in os.environ.items() if not k.startswith("COGNITO")}
-
 _COGNITO_FULL_ENV = {
     "COGNITO_USER_POOL_ID": "us-east-1_Test",
+    "COGNITO_REGION": "us-east-1",
     "COGNITO_CLIENT_ID": "client-id",
     "COGNITO_CLIENT_SECRET": "secret",
-    "COGNITO_DOMAIN": "https://test.auth.us-east-1.amazoncognito.com",
+    "COGNITO_DOMAIN": "test",
 }
 
 
-def _reload_server(**cognito_vars):
-    """Reload server module with specific COGNITO env vars (others preserved)."""
-    env = {**_BASE_ENV, **cognito_vars}
-    with patch.dict(os.environ, env, clear=True):
-        import server
-        importlib.reload(server)
-        return server
+def _build_auth(**env_overrides):
+    """Call _build_cognito_auth with specific COGNITO env vars."""
+    env = {**_COGNITO_FULL_ENV, **env_overrides}
+    with patch.dict(os.environ, env, clear=False), \
+         patch.object(server, "MCP_BASE_URL", "https://example.com"):
+        return server._build_cognito_auth()
+
+
+def _build_auth_missing(key: str):
+    """Call _build_cognito_auth with one COGNITO var removed."""
+    env = {k: v for k, v in _COGNITO_FULL_ENV.items() if k != key}
+    # Clear all COGNITO_ vars first, then set only what we want
+    clear = {k: "" for k in _COGNITO_FULL_ENV}
+    with patch.dict(os.environ, {**clear, **env}, clear=False), \
+         patch.object(server, "MCP_BASE_URL", "https://example.com"):
+        return server._build_cognito_auth()
 
 
 # --- Configuration tests ---
 
 
 def test_no_auth_without_env_var():
-    """When COGNITO_USER_POOL_ID is not set, _auth should be None."""
-    srv = _reload_server()
-    assert srv._auth is None
+    """When COGNITO_USER_POOL_ID is not set, _build_cognito_auth returns None."""
+    clear = {k: "" for k in _COGNITO_FULL_ENV}
+    with patch.dict(os.environ, clear, clear=False):
+        result = server._build_cognito_auth()
+    assert result is None
+
+
+def test_auth_requires_region():
+    """Missing COGNITO_REGION should raise RuntimeError."""
+    with pytest.raises(RuntimeError, match="COGNITO_REGION"):
+        _build_auth_missing("COGNITO_REGION")
 
 
 def test_auth_requires_client_id():
     """Missing COGNITO_CLIENT_ID should raise RuntimeError."""
-    env = {**_COGNITO_FULL_ENV}
-    del env["COGNITO_CLIENT_ID"]
     with pytest.raises(RuntimeError, match="COGNITO_CLIENT_ID"):
-        _reload_server(**env)
+        _build_auth_missing("COGNITO_CLIENT_ID")
 
 
 def test_auth_requires_client_secret():
     """Missing COGNITO_CLIENT_SECRET should raise RuntimeError."""
-    env = {**_COGNITO_FULL_ENV}
-    del env["COGNITO_CLIENT_SECRET"]
     with pytest.raises(RuntimeError, match="COGNITO_CLIENT_SECRET"):
-        _reload_server(**env)
+        _build_auth_missing("COGNITO_CLIENT_SECRET")
 
 
 def test_auth_requires_domain():
     """Missing COGNITO_DOMAIN should raise RuntimeError."""
-    env = {**_COGNITO_FULL_ENV}
-    del env["COGNITO_DOMAIN"]
     with pytest.raises(RuntimeError, match="COGNITO_DOMAIN"):
-        _reload_server(**env)
+        _build_auth_missing("COGNITO_DOMAIN")
 
 
 def test_auth_configured_with_all_vars():
-    """With all required vars set, _auth should be an OAuthProxy instance."""
-    srv = _reload_server(**_COGNITO_FULL_ENV)
-    assert isinstance(srv._auth, OAuthProxy)
-
-
-def test_region_extracted_from_pool_id():
-    """Region should be auto-extracted from the pool ID if COGNITO_REGION is not set."""
-    env = {**_COGNITO_FULL_ENV, "COGNITO_USER_POOL_ID": "eu-west-1_MyPool"}
-    srv = _reload_server(**env)
-    assert srv._cognito_region == "eu-west-1"
-
-
-def test_explicit_region_overrides_pool_id():
-    """Explicit COGNITO_REGION should take precedence over the pool ID prefix."""
-    env = {**_COGNITO_FULL_ENV, "COGNITO_REGION": "us-west-2"}
-    srv = _reload_server(**env)
-    assert srv._cognito_region == "us-west-2"
+    """With all required vars set, should return an OAuthProxy instance."""
+    result = _build_auth()
+    assert isinstance(result, OAuthProxy)
 
 
 # --- JWTVerifier token validation tests ---
