@@ -41,11 +41,11 @@ def _make_response(
 class TestFormatResponse:
     def test_text_only_no_metadata(self):
         resp = _make_response("Hello world")
-        assert _format_response(resp, "test") == "Hello world"
+        assert _format_response(resp) == "Hello world"
 
     def test_text_only_metadata_none(self):
         resp = _make_response("Hello", metadata=None)
-        assert _format_response(resp, "test") == "Hello"
+        assert _format_response(resp) == "Hello"
 
     def test_no_grounding_just_text(self):
         metadata = SimpleNamespace(
@@ -54,11 +54,9 @@ class TestFormatResponse:
             grounding_supports=None,
         )
         resp = _make_response("answer", metadata=metadata)
-        result = _format_response(resp, "test")
-        assert "answer" in result
-        assert "No links found." in result
+        assert _format_response(resp) == "answer"
 
-    def test_links_and_reminder_included(self):
+    def test_sources_appended(self):
         chunks = [
             _make_chunk("Site A", "https://a.com"),
             _make_chunk("Site B", "https://b.com"),
@@ -69,13 +67,10 @@ class TestFormatResponse:
             grounding_supports=None,
         )
         resp = _make_response("info", metadata=metadata)
-        result = _format_response(resp, "my query")
-        assert result.startswith('Web search results for query: "my query"')
-        assert '"title": "Site A"' in result
-        assert '"url": "https://a.com"' in result
-        assert '"title": "Site B"' in result
-        assert "info" in result
-        assert "REMINDER:" in result
+        result = _format_response(resp)
+        assert "Sources:" in result
+        assert "- [Site A](https://a.com)" in result
+        assert "- [Site B](https://b.com)" in result
 
     def test_inline_citations(self):
         chunks = [_make_chunk("Site A", "https://a.com")]
@@ -86,7 +81,7 @@ class TestFormatResponse:
             grounding_supports=supports,
         )
         resp = _make_response("Hello world", metadata=metadata)
-        result = _format_response(resp, "test")
+        result = _format_response(resp)
         assert "[1](https://a.com)" in result
 
     def test_multiple_supports_descending_order(self):
@@ -105,7 +100,7 @@ class TestFormatResponse:
             grounding_supports=supports,
         )
         resp = _make_response(text, metadata=metadata)
-        result = _format_response(resp, "test")
+        result = _format_response(resp)
         assert "[1](https://a.com)" in result
         assert "[2](https://b.com)" in result
         assert result.index("[1]") < result.index("[2]")
@@ -119,9 +114,9 @@ class TestFormatResponse:
             grounding_supports=supports,
         )
         resp = _make_response("Hello world", metadata=metadata)
-        result = _format_response(resp, "test")
+        result = _format_response(resp)
         assert "Hello world" in result
-        assert "[1]" not in result  # no citation inserted
+        assert "[1]" not in result
 
     def test_chunk_index_out_of_range_skipped(self):
         chunks = [_make_chunk("A", "https://a.com")]
@@ -132,23 +127,13 @@ class TestFormatResponse:
             grounding_supports=supports,
         )
         resp = _make_response("Hello world", metadata=metadata)
-        result = _format_response(resp, "test")
+        result = _format_response(resp)
         assert "Hello world" in result
-        assert "[99]" not in result  # out-of-range citation not inserted
+        assert "[99]" not in result
 
     def test_empty_candidates(self):
         resp = SimpleNamespace(text="Hello", candidates=[])
-        assert _format_response(resp, "test") == "Hello"
-
-    def test_no_links_says_no_links(self):
-        metadata = SimpleNamespace(
-            web_search_queries=None,
-            grounding_chunks=[],
-            grounding_supports=None,
-        )
-        resp = _make_response("answer", metadata=metadata)
-        result = _format_response(resp, "test")
-        assert "No links found." in result
+        assert _format_response(resp) == "Hello"
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +143,7 @@ class TestFormatResponse:
 
 class TestWebSearch:
     @pytest.mark.asyncio
-    async def test_calls_gemini_and_returns_envelope(self):
+    async def test_calls_gemini_and_returns_markdown(self):
         mock_response = _make_response("search result")
 
         with patch("server._gemini") as mock_client:
@@ -167,14 +152,13 @@ class TestWebSearch:
             )
             result = await web_search("test query")
 
-        # No metadata → falls through to plain text
         assert result == "search result"
 
         call_kwargs = mock_client.aio.models.generate_content.call_args
         assert call_kwargs.kwargs["contents"] == "test query"
 
     @pytest.mark.asyncio
-    async def test_returns_envelope_with_links(self):
+    async def test_returns_markdown_with_sources(self):
         chunks = [_make_chunk("Example", "https://example.com")]
         metadata = SimpleNamespace(
             web_search_queries=["test"],
@@ -189,10 +173,9 @@ class TestWebSearch:
             )
             result = await web_search("test")
 
-        assert 'Web search results for query: "test"' in result
         assert "result text" in result
-        assert '"title": "Example"' in result
-        assert "REMINDER:" in result
+        assert "Sources:" in result
+        assert "[Example](https://example.com)" in result
 
 
 # ---------------------------------------------------------------------------
