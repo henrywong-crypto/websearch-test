@@ -1,9 +1,7 @@
 """MCP server that provides web search via Gemini Grounding with Google Search."""
 
-import json
 import logging
 import os
-from typing import Any
 
 from cryptography.fernet import Fernet
 from fastmcp import FastMCP
@@ -77,6 +75,7 @@ def _build_cognito_auth() -> OAuthProxy | None:
     scopes_raw = os.getenv("COGNITO_SCOPES", "")
     required_scopes = [s.strip() for s in scopes_raw.split() if s.strip()] or None
 
+    # Stable random string for signing JWTs. Generate with: openssl rand -base64 32
     jwt_signing_key = os.getenv("MCP_JWT_SIGNING_KEY")
     auth = OAuthProxy(
         upstream_authorization_endpoint=f"{cognito_base_url}/oauth2/authorize",
@@ -105,52 +104,44 @@ mcp = FastMCP("gemini-websearch", auth=_build_cognito_auth())
 # ── Response formatting ──────────────────────────────────────────────────────
 #
 # Gemini Grounding responses contain the answer text plus metadata linking
-# spans of text back to web sources. We restructure this into a JSON dict
-# that MCP clients can render directly:
+# spans of text back to web sources. We format this as markdown so MCP
+# clients (LLMs) can pass it directly to the user:
 #
-#   {
-#     "text": "Python 3.14 was released in October 2025.",
-#     "search_queries": ["Python 3.14 release date"],
-#     "sources": [
-#       {"title": "Python.org", "uri": "https://python.org/downloads/"},
-#       {"title": "Wikipedia", "uri": "https://en.wikipedia.org/wiki/Python"}
-#     ],
-#     "cited_text": "Python 3.14 was released in October 2025. [1](https://python.org/downloads/), [2](https://en.wikipedia.org/wiki/Python)"
-#   }
+#   Python 3.14 was released in October 2025. [1](https://python.org) [2](https://en.wikipedia.org)
 #
-# "cited_text" inlines markdown-style reference links at the end of each
-# supported text span so an LLM or UI can show sources next to the claims.
+#   Sources:
+#   - [Python.org](https://python.org/downloads/)
+#   - [Wikipedia](https://en.wikipedia.org/wiki/Python)
 
 
-def _format_response(response) -> dict[str, Any]:
-    # Extract text, sources, and inline citations from a raw Gemini response
-    # into a flat dict that MCP clients can render directly.
-    result: dict[str, Any] = {"text": response.text}
+def _format_response(response) -> str:
+    # Format a raw Gemini response into markdown with inline citations and sources.
+    text = response.text or ""
 
     if not response.candidates:
-        return result
+        return text
 
     metadata = response.candidates[0].grounding_metadata
     if not metadata:
-        return result
-
-    if metadata.web_search_queries:
-        result["search_queries"] = list(metadata.web_search_queries)
+        return text
 
     chunks = metadata.grounding_chunks or []
+    supports = metadata.grounding_supports or []
+
+    # Insert inline citation links into the text at each supported span.
+    if supports and chunks:
+        text = _build_cited_text(text, supports, chunks)
+
+    # Append a sources list at the end.
     sources = [
-        {"title": chunk.web.title, "uri": chunk.web.uri}
+        f"- [{chunk.web.title}]({chunk.web.uri})"
         for chunk in chunks
         if chunk.web
     ]
     if sources:
-        result["sources"] = sources
+        text += "\n\nSources:\n" + "\n".join(sources)
 
-    supports = metadata.grounding_supports or []
-    if supports and chunks:
-        result["cited_text"] = _build_cited_text(response.text, supports, chunks)
-
-    return result
+    return text
 
 
 def _build_cited_text(text: str, supports, chunks) -> str:
@@ -192,7 +183,7 @@ async def web_search(query: str) -> str:
     response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=_GOOGLE_SEARCH_CONFIG
     )
-    return json.dumps(_format_response(response), indent=2)
+    return _format_response(response)
 
 
 @mcp.tool()
@@ -211,7 +202,7 @@ async def web_search_custom(query: str, system_instruction: str) -> str:
     response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=config
     )
-    return json.dumps(_format_response(response), indent=2)
+    return _format_response(response)
 
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────

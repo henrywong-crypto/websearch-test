@@ -1,6 +1,5 @@
 """Tests for the Gemini WebSearch MCP server."""
 
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -42,25 +41,22 @@ def _make_response(
 class TestFormatResponse:
     def test_text_only_no_metadata(self):
         resp = _make_response("Hello world")
-        result = _format_response(resp)
-        assert result == {"text": "Hello world"}
+        assert _format_response(resp) == "Hello world"
 
     def test_text_only_metadata_none(self):
         resp = _make_response("Hello", metadata=None)
-        result = _format_response(resp)
-        assert result == {"text": "Hello"}
+        assert _format_response(resp) == "Hello"
 
-    def test_web_search_queries(self):
+    def test_no_grounding_just_text(self):
         metadata = SimpleNamespace(
             web_search_queries=["q1", "q2"],
             grounding_chunks=None,
             grounding_supports=None,
         )
         resp = _make_response("answer", metadata=metadata)
-        result = _format_response(resp)
-        assert result["search_queries"] == ["q1", "q2"]
+        assert _format_response(resp) == "answer"
 
-    def test_grounding_chunks_extracts_sources(self):
+    def test_sources_appended(self):
         chunks = [
             _make_chunk("Site A", "https://a.com"),
             _make_chunk("Site B", "https://b.com"),
@@ -72,13 +68,11 @@ class TestFormatResponse:
         )
         resp = _make_response("info", metadata=metadata)
         result = _format_response(resp)
-        assert result["sources"] == [
-            {"title": "Site A", "uri": "https://a.com"},
-            {"title": "Site B", "uri": "https://b.com"},
-        ]
-        assert "cited_text" not in result
+        assert "Sources:" in result
+        assert "- [Site A](https://a.com)" in result
+        assert "- [Site B](https://b.com)" in result
 
-    def test_supports_with_inline_citations(self):
+    def test_inline_citations(self):
         chunks = [_make_chunk("Site A", "https://a.com")]
         supports = [_make_support(0, 5, [0])]
         metadata = SimpleNamespace(
@@ -88,7 +82,7 @@ class TestFormatResponse:
         )
         resp = _make_response("Hello world", metadata=metadata)
         result = _format_response(resp)
-        assert "[1](https://a.com)" in result["cited_text"]
+        assert "[1](https://a.com)" in result
 
     def test_multiple_supports_descending_order(self):
         text = "First sentence. Second sentence."
@@ -107,12 +101,11 @@ class TestFormatResponse:
         )
         resp = _make_response(text, metadata=metadata)
         result = _format_response(resp)
-        cited = result["cited_text"]
-        assert "[1](https://a.com)" in cited
-        assert "[2](https://b.com)" in cited
-        assert cited.index("[1]") < cited.index("[2]")
+        assert "[1](https://a.com)" in result
+        assert "[2](https://b.com)" in result
+        assert result.index("[1]") < result.index("[2]")
 
-    def test_support_with_empty_chunk_indices_skipped(self):
+    def test_empty_chunk_indices_skipped(self):
         chunks = [_make_chunk("A", "https://a.com")]
         supports = [_make_support(0, 5, [])]
         metadata = SimpleNamespace(
@@ -122,7 +115,7 @@ class TestFormatResponse:
         )
         resp = _make_response("Hello world", metadata=metadata)
         result = _format_response(resp)
-        assert "cited_text" not in result or result.get("cited_text") == "Hello world"
+        assert result.startswith("Hello world")
 
     def test_chunk_index_out_of_range_skipped(self):
         chunks = [_make_chunk("A", "https://a.com")]
@@ -134,12 +127,11 @@ class TestFormatResponse:
         )
         resp = _make_response("Hello world", metadata=metadata)
         result = _format_response(resp)
-        assert "cited_text" not in result or "[" not in result.get("cited_text", "")
+        assert result.startswith("Hello world")
 
     def test_empty_candidates(self):
         resp = SimpleNamespace(text="Hello", candidates=[])
-        result = _format_response(resp)
-        assert result == {"text": "Hello"}
+        assert _format_response(resp) == "Hello"
 
 
 # ---------------------------------------------------------------------------
@@ -149,23 +141,22 @@ class TestFormatResponse:
 
 class TestWebSearch:
     @pytest.mark.asyncio
-    async def test_calls_gemini_and_returns_json(self):
+    async def test_calls_gemini_and_returns_markdown(self):
         mock_response = _make_response("search result")
 
         with patch("server._gemini") as mock_client:
             mock_client.aio.models.generate_content = AsyncMock(
                 return_value=mock_response
             )
-            raw = await web_search("test query")
+            result = await web_search("test query")
 
-        result = json.loads(raw)
-        assert result["text"] == "search result"
+        assert result == "search result"
 
         call_kwargs = mock_client.aio.models.generate_content.call_args
         assert call_kwargs.kwargs["contents"] == "test query"
 
     @pytest.mark.asyncio
-    async def test_returns_valid_json_with_expected_keys(self):
+    async def test_returns_markdown_with_sources(self):
         chunks = [_make_chunk("Example", "https://example.com")]
         metadata = SimpleNamespace(
             web_search_queries=["test"],
@@ -178,12 +169,11 @@ class TestWebSearch:
             mock_client.aio.models.generate_content = AsyncMock(
                 return_value=mock_response
             )
-            raw = await web_search("test")
+            result = await web_search("test")
 
-        result = json.loads(raw)
-        assert "text" in result
-        assert "search_queries" in result
-        assert "sources" in result
+        assert "result text" in result
+        assert "Sources:" in result
+        assert "[Example](https://example.com)" in result
 
 
 # ---------------------------------------------------------------------------
@@ -207,17 +197,16 @@ class TestWebSearchCustom:
         assert config.system_instruction == "Be concise"
 
     @pytest.mark.asyncio
-    async def test_returns_valid_json(self):
+    async def test_returns_markdown(self):
         mock_response = _make_response("custom result")
 
         with patch("server._gemini") as mock_client:
             mock_client.aio.models.generate_content = AsyncMock(
                 return_value=mock_response
             )
-            raw = await web_search_custom("query", "instructions")
+            result = await web_search_custom("query", "instructions")
 
-        result = json.loads(raw)
-        assert result["text"] == "custom result"
+        assert result == "custom result"
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +232,7 @@ class TestMCPIntegration:
             )
             result = await mcp.call_tool("web_search", {"query": "test"})
 
-        parsed = json.loads(result.content[0].text)
-        assert parsed["text"] == "mcp result"
+        assert result.content[0].text == "mcp result"
 
     @pytest.mark.asyncio
     async def test_call_web_search_custom_through_mcp(self):
@@ -259,5 +247,4 @@ class TestMCPIntegration:
                 {"query": "test", "system_instruction": "Be brief"},
             )
 
-        parsed = json.loads(result.content[0].text)
-        assert parsed["text"] == "custom mcp result"
+        assert result.content[0].text == "custom mcp result"
