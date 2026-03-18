@@ -1,26 +1,30 @@
 {pkgs ? import (import ./npins).nixpkgs {}}: let
+  sources = import ./npins;
+  lib = pkgs.lib;
   python = pkgs.python314;
 
-  app = python.pkgs.buildPythonApplication {
-    pname = "gemini-websearch-mcp";
-    version = "0.1.0";
-    pyproject = true;
-    src = ./.;
+  pyproject-nix = import sources."pyproject.nix" {inherit lib;};
+  uv2nix = import sources.uv2nix {inherit lib pyproject-nix;};
+  pyproject-build-systems = import sources.build-system-pkgs {inherit lib pyproject-nix uv2nix;};
 
-    build-system = with python.pkgs; [uv-build];
+  workspace = uv2nix.lib.workspace.loadWorkspace {workspaceRoot = ./.;};
 
-    dependencies = with python.pkgs; [
-      fastmcp
-      google-genai
-      asyncpg
-    ];
+  overlay = workspace.mkPyprojectOverlay {sourcePreference = "wheel";};
 
-    pythonImportsCheck = ["server"];
-  };
+  pythonSet =
+    (pkgs.callPackage pyproject-nix.build.packages {inherit python;})
+    .overrideScope (
+      lib.composeManyExtensions [
+        pyproject-build-systems.wheel
+        overlay
+      ]
+    );
+
+  venv = pythonSet.mkVirtualEnv "gemini-websearch-env" workspace.deps.default;
 
   entrypoint = pkgs.writeScriptBin "server" ''
     #!${pkgs.bash}/bin/bash
-    exec ${app}/bin/python ${app}/${python.sitePackages}/server.py
+    exec ${venv}/bin/python ${venv}/${python.sitePackages}/server.py
   '';
 in
   pkgs.dockerTools.buildImage {
