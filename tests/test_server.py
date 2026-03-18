@@ -1,6 +1,5 @@
 """Tests for the Gemini WebSearch MCP server."""
 
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -122,6 +121,7 @@ class TestFormatResponse:
         resp = _make_response("Hello world", metadata=metadata)
         result = _format_response(resp, "test")
         assert "Hello world" in result
+        assert "[1]" not in result  # no citation inserted
 
     def test_chunk_index_out_of_range_skipped(self):
         chunks = [_make_chunk("A", "https://a.com")]
@@ -134,6 +134,7 @@ class TestFormatResponse:
         resp = _make_response("Hello world", metadata=metadata)
         result = _format_response(resp, "test")
         assert "Hello world" in result
+        assert "[99]" not in result  # out-of-range citation not inserted
 
     def test_empty_candidates(self):
         resp = SimpleNamespace(text="Hello", candidates=[])
