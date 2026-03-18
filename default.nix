@@ -15,7 +15,9 @@
     (pkgs.callPackage pyproject-nix.build.packages {inherit python;})
     .overrideScope (
       lib.composeManyExtensions [
+        # Provides build-system packages (setuptools, wheel, etc.) for building Python packages.
         pyproject-build-systems.wheel
+        # Resolves all dependencies from uv.lock into the package set.
         overlay
       ]
     );
