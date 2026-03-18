@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from server import _format_response, mcp, web_search, web_search_custom
+from server import _format_response, mcp, web_search
 
 # ---------------------------------------------------------------------------
 # Helpers to build mock Gemini response objects
@@ -177,50 +177,16 @@ class TestWebSearch:
 
 
 # ---------------------------------------------------------------------------
-# 3. web_search_custom tool
-# ---------------------------------------------------------------------------
-
-
-class TestWebSearchCustom:
-    @pytest.mark.asyncio
-    async def test_passes_system_instruction(self):
-        mock_response = _make_response("custom result")
-
-        with patch("server._gemini") as mock_client:
-            mock_client.aio.models.generate_content = AsyncMock(
-                return_value=mock_response
-            )
-            await web_search_custom("query", "Be concise")
-
-        call_kwargs = mock_client.aio.models.generate_content.call_args
-        config = call_kwargs.kwargs["config"]
-        assert config.system_instruction == "Be concise"
-
-    @pytest.mark.asyncio
-    async def test_returns_markdown(self):
-        mock_response = _make_response("custom result")
-
-        with patch("server._gemini") as mock_client:
-            mock_client.aio.models.generate_content = AsyncMock(
-                return_value=mock_response
-            )
-            result = await web_search_custom("query", "instructions")
-
-        assert result == "custom result"
-
-
-# ---------------------------------------------------------------------------
-# 4. MCP server integration
+# 3. MCP server integration
 # ---------------------------------------------------------------------------
 
 
 class TestMCPIntegration:
     @pytest.mark.asyncio
-    async def test_server_exposes_both_tools(self):
+    async def test_server_exposes_web_search_tool(self):
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
         assert "web_search" in tool_names
-        assert "web_search_custom" in tool_names
 
     @pytest.mark.asyncio
     async def test_call_web_search_through_mcp(self):
@@ -233,18 +199,3 @@ class TestMCPIntegration:
             result = await mcp.call_tool("web_search", {"query": "test"})
 
         assert result.content[0].text == "mcp result"
-
-    @pytest.mark.asyncio
-    async def test_call_web_search_custom_through_mcp(self):
-        mock_response = _make_response("custom mcp result")
-
-        with patch("server._gemini") as mock_client:
-            mock_client.aio.models.generate_content = AsyncMock(
-                return_value=mock_response
-            )
-            result = await mcp.call_tool(
-                "web_search_custom",
-                {"query": "test", "system_instruction": "Be brief"},
-            )
-
-        assert result.content[0].text == "custom mcp result"

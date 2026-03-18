@@ -179,28 +179,14 @@ async def web_search(query: str) -> str:
 
     Args:
         query: The search query or question to answer.
-    """
+
+    Usage notes:
+    - Results are returned as markdown with inline citation links and a Sources list.
+    - After using the results to answer a question, include a "Sources:" section
+      at the end of your response listing all relevant URLs as markdown hyperlinks.
+    - Use the current year in search queries when looking for recent information."""
     response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=_GOOGLE_SEARCH_CONFIG
-    )
-    return _format_response(response)
-
-
-@mcp.tool()
-async def web_search_custom(query: str, system_instruction: str) -> str:
-    """Search the web with a custom system instruction to shape the response.
-
-    Args:
-        query: The search query or question to answer.
-        system_instruction: Instructions for how to process and present results
-            (e.g. "Respond in bullet points", "Focus on technical details").
-    """
-    config = types.GenerateContentConfig(
-        tools=[types.Tool(google_search=types.GoogleSearch())],
-        system_instruction=system_instruction,
-    )
-    response = await _gemini.aio.models.generate_content(
-        model=GEMINI_MODEL, contents=query, config=config
     )
     return _format_response(response)
 
