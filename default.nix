@@ -1,5 +1,5 @@
 {pkgs ? import (import ./npins).nixpkgs {}}: let
-  python = pkgs.python312;
+  python = pkgs.python314;
 
   app = python.pkgs.buildPythonApplication {
     pname = "gemini-websearch-mcp";
@@ -28,7 +28,6 @@ in
     tag = "latest";
     config = {
       Entrypoint = ["${entrypoint}/bin/server"];
-      ExposedPorts = {"8080/tcp" = {};};
     };
     copyToRoot = pkgs.buildEnv {
       name = "image-root";
