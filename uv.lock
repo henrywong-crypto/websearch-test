@@ -385,22 +385,18 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "asyncpg", specifier = ">=0.31" },
     { name = "fastmcp", specifier = ">=3.1.1" },
-    { name = "google-genai", specifier = ">=1.14.0" },
+    { name = "google-genai", specifier = ">=1.68.0" },
 ]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.25" },
-]
+dev = [{ name = "pytest-asyncio", specifier = ">=1.3" }]
 
 [[package]]
 name = "google-auth"
