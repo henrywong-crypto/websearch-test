@@ -3,13 +3,13 @@ name = "gemini-websearch-mcp"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
-    "asyncpg>=0.29",
+    "asyncpg>=0.31",
     "fastmcp>=3.1.1",
-    "google-genai>=1.14.0",
+    "google-genai>=1.68.0",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.25",
+    "pytest>=9.0",
+    "pytest-asyncio>=1.3",
 ]
