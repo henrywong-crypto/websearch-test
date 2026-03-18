@@ -161,8 +161,14 @@ _GOOGLE_SEARCH_CONFIG = types.GenerateContentConfig(
 async def web_search(query: str) -> str:
     """Search the web using Gemini Grounding with Google Search.
 
-    Returns up-to-date information with citations from real web sources.
-    Use this for any question that benefits from current, factual information.
+    - Allows Claude to search the web and use the results to inform responses
+    - Provides up-to-date information for current events and recent data
+    - Returns search result information formatted as search result blocks, including links as markdown hyperlinks
+    - Use this tool for accessing information beyond Claude's knowledge cutoff
+    - Searches are performed automatically within a single API call
+
+    IMPORTANT - Use the correct year in search queries:
+      - You MUST use the current year when searching for recent information, documentation, or current events.
 
     Args:
         query: The search query or question to answer.
