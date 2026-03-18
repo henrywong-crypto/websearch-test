@@ -1,5 +1,6 @@
 """MCP server that provides web search via Gemini Grounding with Google Search."""
 
+import json
 import logging
 import os
 
@@ -103,19 +104,20 @@ mcp = FastMCP("gemini-websearch", auth=_build_cognito_auth())
 
 # ── Response formatting ──────────────────────────────────────────────────────
 #
-# Gemini Grounding responses contain the answer text plus metadata linking
-# spans of text back to web sources. We format this as markdown so MCP
-# clients (LLMs) can pass it directly to the user:
+# Format the Gemini Grounding response to match the pattern used by Claude
+# Code's WebSearch tool result:
 #
-#   Python 3.14 was released in October 2025. [1](https://python.org) [2](https://en.wikipedia.org)
+#   Web search results for query: "python 3.14"
 #
-#   Sources:
-#   - [Python.org](https://python.org/downloads/)
-#   - [Wikipedia](https://en.wikipedia.org/wiki/Python)
+#   Links: [{"title":"Python.org","url":"https://python.org"}, ...]
+#
+#   Python 3.14 was released in October 2025. [1](https://python.org) ...
+#
+#   REMINDER: You MUST include the sources above in your response ...
 
 
-def _format_response(response) -> str:
-    # Format a raw Gemini response into markdown with inline citations and sources.
+def _format_response(response, query: str) -> str:
+    # Format a raw Gemini response into the tool result envelope.
     text = response.text or ""
 
     if not response.candidates:
@@ -132,16 +134,26 @@ def _format_response(response) -> str:
     if supports and chunks:
         text = _build_cited_text(text, supports, chunks)
 
-    # Append a sources list at the end.
-    sources = [
-        f"- [{chunk.web.title}]({chunk.web.uri})"
+    # Build links array from grounding chunks.
+    links = [
+        {"title": chunk.web.title, "url": chunk.web.uri}
         for chunk in chunks
         if chunk.web
     ]
-    if sources:
-        text += "\n\nSources:\n" + "\n".join(sources)
 
-    return text
+    # Assemble the tool result in the same format as Claude Code's WebSearch.
+    parts = [f'Web search results for query: "{query}"']
+    if links:
+        parts.append(f"Links: {json.dumps(links)}")
+    else:
+        parts.append("No links found.")
+    parts.append(text)
+    parts.append(
+        "REMINDER: You MUST include the sources above in your response "
+        "to the user using markdown hyperlinks."
+    )
+
+    return "\n\n".join(parts)
 
 
 def _build_cited_text(text: str, supports, chunks) -> str:
@@ -165,8 +177,15 @@ def _build_cited_text(text: str, supports, chunks) -> str:
 
 # ── Tools ────────────────────────────────────────────────────────────────────
 
+_SYSTEM_INSTRUCTION = (
+    "You are a web search assistant. "
+    "Answer the user's query using grounded web search results. "
+    "Be concise and factual."
+)
+
 _GOOGLE_SEARCH_CONFIG = types.GenerateContentConfig(
-    tools=[types.Tool(google_search=types.GoogleSearch())]
+    system_instruction=_SYSTEM_INSTRUCTION,
+    tools=[types.Tool(google_search=types.GoogleSearch())],
 )
 
 
@@ -180,15 +199,26 @@ async def web_search(query: str) -> str:
     Args:
         query: The search query or question to answer.
 
-    Usage notes:
-    - Results are returned as markdown with inline citation links and a Sources list.
-    - After using the results to answer a question, include a "Sources:" section
-      at the end of your response listing all relevant URLs as markdown hyperlinks.
-    - Use the current year in search queries when looking for recent information."""
+    CRITICAL REQUIREMENT - You MUST follow this:
+      - After answering the user's question, you MUST include a "Sources:" section at the end of your response
+      - In the Sources section, list all relevant URLs from the search results as markdown hyperlinks: [Title](URL)
+      - This is MANDATORY - never skip including sources in your response
+      - Example format:
+
+        [Your answer here]
+
+        Sources:
+        - [Source Title 1](https://example.com/1)
+        - [Source Title 2](https://example.com/2)
+
+    IMPORTANT - Use the correct year in search queries:
+      - You MUST use the current year when searching for recent information, documentation, or current events.
+      - Example: If the user asks for "latest React docs", search for "React documentation 2025", NOT "React documentation 2024"
+    """
     response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=_GOOGLE_SEARCH_CONFIG
     )
-    return _format_response(response)
+    return _format_response(response, query)
 
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────
