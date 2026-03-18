@@ -1,5 +1,6 @@
 """MCP server that provides web search via Gemini Grounding with Google Search."""
 
+import json
 import logging
 import os
 
@@ -103,18 +104,19 @@ mcp = FastMCP("gemini-websearch", auth=_build_cognito_auth())
 
 # ── Response formatting ──────────────────────────────────────────────────────
 #
-# Gemini Grounding responses contain the answer text plus metadata linking
-# spans of text back to web sources. We format this as markdown so MCP
-# clients (LLMs) can pass it directly to the user:
+# Wrap Gemini's grounded response in the same envelope as Claude Code's
+# WebSearch tool result:
 #
-#   Python 3.14 was released in October 2025. [1](https://python.org) [2](https://en.wikipedia.org)
+#   Web search results for query: "python 3.14"
 #
-#   Sources:
-#   - [Python.org](https://python.org/downloads/)
-#   - [Wikipedia](https://en.wikipedia.org/wiki/Python)
+#   Links: [{"title":"Python.org","url":"https://python.org"}, ...]
+#
+#   Python 3.14 was released in October 2025. ...
+#
+#   REMINDER: You MUST include the sources above in your response ...
 
 
-def _format_response(response) -> str:
+def _format_response(response, query: str) -> str:
     text = response.text or ""
 
     if not response.candidates:
@@ -125,41 +127,27 @@ def _format_response(response) -> str:
         return text
 
     chunks = metadata.grounding_chunks or []
-    supports = metadata.grounding_supports or []
 
-    # Insert inline citation links into the text at each supported span.
-    if supports and chunks:
-        text = _build_cited_text(text, supports, chunks)
-
-    # Append a sources list at the end.
-    sources = [
-        f"- [{chunk.web.title}]({chunk.web.uri})"
+    # Build links array from grounding chunks.
+    links = [
+        {"title": chunk.web.title, "url": chunk.web.uri}
         for chunk in chunks
         if chunk.web
     ]
-    if sources:
-        text += "\n\nSources:\n" + "\n".join(sources)
 
-    return text
+    # Assemble the tool result in the same format as Claude Code's WebSearch.
+    parts = [f'Web search results for query: "{query}"']
+    if links:
+        parts.append(f"Links: {json.dumps(links)}")
+    else:
+        parts.append("No links found.")
+    parts.append(text)
+    parts.append(
+        "REMINDER: You MUST include the sources above in your response "
+        "to the user using markdown hyperlinks."
+    )
 
-
-def _build_cited_text(text: str, supports, chunks) -> str:
-    # Each "support" marks a text span (start_index..end_index) and the chunk
-    # indices that back it. We insert "[N](url)" links after each span.
-    # Process from end to start so earlier offsets stay valid after insertion.
-    cited = text
-    for support in sorted(supports, key=lambda s: s.segment.end_index, reverse=True):
-        if not support.grounding_chunk_indices:
-            continue
-        links = [
-            f"[{i + 1}]({chunks[i].web.uri})"
-            for i in support.grounding_chunk_indices
-            if i < len(chunks) and chunks[i].web
-        ]
-        if links:
-            end = support.segment.end_index
-            cited = cited[:end] + " " + ", ".join(links) + cited[end:]
-    return cited
+    return "\n\n".join(parts)
 
 
 # ── Tools ────────────────────────────────────────────────────────────────────
@@ -182,7 +170,7 @@ async def web_search(query: str) -> str:
     response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=_GOOGLE_SEARCH_CONFIG
     )
-    return _format_response(response)
+    return _format_response(response, query)
 
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────
