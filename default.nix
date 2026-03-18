@@ -1,5 +1,7 @@
-{pkgs ? import (import ./npins).nixpkgs {}}: let
+let
   sources = import ./npins;
+in
+{pkgs ? import sources.nixpkgs {}}: let
   lib = pkgs.lib;
   python = pkgs.python314;
 
