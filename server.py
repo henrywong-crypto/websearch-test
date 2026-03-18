@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8080"))
-MCP_BASE_URL = os.getenv("MCP_BASE_URL", f"http://{MCP_HOST}:{MCP_PORT}")
+MCP_BASE_URL = os.getenv("MCP_BASE_URL", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
