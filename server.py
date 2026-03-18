@@ -186,9 +186,6 @@ async def web_search(query: str) -> str:
     IMPORTANT - Use the correct year in search queries:
       - Today's date is 2025-12-06. You MUST use this year when searching for recent information, documentation, or current events.
       - Example: If today is 2025-07-15 and the user asks for "latest React docs", search for "React documentation 2025", NOT "React documentation 2024"
-
-    Args:
-        query: The search query or question to answer.
     """
     response = await _gemini.aio.models.generate_content(
         model=GEMINI_MODEL, contents=query, config=_GOOGLE_SEARCH_CONFIG
